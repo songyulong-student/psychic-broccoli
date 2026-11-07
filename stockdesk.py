@@ -1,7 +1,7 @@
 import os
-import json
 import requests
 import yfinance as yf
+import pandas as pd
 from datetime import datetime
 import zoneinfo
 
@@ -22,99 +22,123 @@ def send_tg(text):
 def scan_market():
     now_jst = datetime.now(JST).strftime("%Y-%m-%d %H:%M JST")
     
-    # 1. 获取大盘基准 (SPY) 与 宏观数据
+    # 获取纳指 (QQQ) 和标普 (SPY) 作为大盘基准
     try:
-        spy_df = yf.Ticker("SPY").history(period="1mo")
-        spy_ret20 = (float(spy_df["Close"].iloc[-1]) / float(spy_df["Close"].iloc[0])) - 1
-        spy_price = round(float(spy_df["Close"].iloc[-1]), 2)
-    except:
-        spy_ret20 = 0
-        spy_price = "N/A"
+        qqq_df = yf.Ticker("QQQ").history(period="2mo")
+        spy_df = yf.Ticker("SPY").history(period="2mo")
+        
+        qqq_ret_today = (qqq_df["Close"].iloc[-1] / qqq_df["Close"].iloc[-2]) - 1
+        spy_ret20 = (spy_df["Close"].iloc[-1] / spy_df["Close"].iloc[0]) - 1
+    except Exception as e:
+        print(f"获取大盘失败: {e}")
+        qqq_ret_today, spy_ret20 = 0, 0
 
-    tickers = {"NVDA": "NVDA", "VIX": "^VIX", "BRENT": "BZ=F"}
-    snap = {}
-    for key, ticker in tickers.items():
-        try:
-            hist = yf.Ticker(ticker).history(period="5d")
-            if not hist.empty: snap[key] = round(float(hist["Close"].iloc[-1]), 2)
-        except: snap[key] = None
+    # 四大金刚股票池
+    universe = {
+        "AMD": "半导体", "NVDA": "半导体", "MU": "半导体", "AVGO": "半导体", "ARM": "半导体",
+        "VST": "电力", "CEG": "电力", "TLN": "电力", "GEV": "电力",
+        "LLY": "医药", "NVO": "医药", "MRK": "医药", "VRTX": "医药",
+        "RDDT": "新股", "PLTR": "新股", "ALAB": "新股", "COIN": "高弹性", "MSTR": "高弹性"
+    }
 
-    # 2. 宏观否决系统
-    vetoes = []
-    if snap.get("NVDA") and snap["NVDA"] < 181.46: vetoes.append("NVDA跌破181.46 (AI情绪崩溃)")
-    if snap.get("BRENT") and snap["BRENT"] > 101: vetoes.append("布伦特原油>101 (地缘风险)")
-    if snap.get("VIX") and snap["VIX"] > 28: vetoes.append("VIX>28 (极度恐慌)")
-
-    # 3. 高级选股池 (科技高弹性 + 资源矿产)
-    candidates = ["AMD", "MU", "TSLA", "PLTR", "AVGO", "SMCI", "MP", "FCX", "ALB", "XOM"]
     valid_cards = []
     
-    for sym in candidates:
+    for sym, sector in universe.items():
         try:
-            df = yf.Ticker(sym).history(period="1mo")
-            if len(df) < 20: continue
+            # 拉取3个月数据以计算长期形态
+            df = yf.Ticker(sym).history(period="3mo")
+            if len(df) < 40: continue
             
-            price = float(df["Close"].iloc[-1])
-            ema20 = float(df["Close"].ewm(span=20).mean().iloc[-1])
-            vol_ratio = float(df["Volume"].iloc[-1] / df["Volume"].tail(20).mean())
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
+            price = last["Close"]
             
-            # 相对强弱 (RS) = 个股涨幅 - 大盘涨幅
-            stock_ret20 = (price / float(df["Close"].iloc[0])) - 1
-            rs_score = stock_ret20 - spy_ret20
+            ema20 = df["Close"].ewm(span=20).mean().iloc[-1]
+            vol_ma20 = df["Volume"].tail(20).mean()
+            vol_ratio = last["Volume"] / vol_ma20
             
-            # 核心过滤：必须在均线上方，且强于大盘
-            if price > ema20 and rs_score > 0:
-                stop = round(price * 0.97, 2) # 3% 止损
-                target = round(price * 1.06, 2) # 6% 止盈 (1:2盈亏比)
+            # 计算个股今日涨跌幅与相对大盘强弱
+            stock_ret_today = (last["Close"] / prev["Close"]) - 1
+            rs_today = stock_ret_today - qqq_ret_today
+            rs20 = (price / df["Close"].iloc[-20]) - 1 - spy_ret20
+            
+            # 计算 ATR 波动率 (用于动态止损)
+            tr = pd.concat([df["High"] - df["Low"], (df["High"] - df["Close"].shift()).abs(), (df["Low"] - df["Close"].shift()).abs()], axis=1).max(axis=1)
+            atr = tr.rolling(14).mean().iloc[-1]
+            
+            # === 核心形态识别 (Price Action) ===
+            pattern = ""
+            
+            # 1. 识别长下影线 (深V / 机构托底)
+            body = abs(last["Close"] - last["Open"])
+            lower_shadow = min(last["Open"], last["Close"]) - last["Low"]
+            is_deep_v = lower_shadow > body * 2 and lower_shadow > price * 0.02
+            
+            # 2. 识别洗盘 (大盘跌，它抗跌)
+            is_shakeout = qqq_ret_today < -0.01 and rs_today > 0.01
+            
+            # 3. 识别放量突破 (突破前20天高点)
+            recent_high = df["High"].tail(20).max()
+            is_breakout = price > recent_high and vol_ratio > 1.5
+            
+            # 4. 识别死猫跳 (均线下方，缩量反弹，严禁做多)
+            is_dead_cat = price < ema20 and stock_ret_today > 0 and vol_ratio < 0.8
+
+            # === 交易逻辑生成 ===
+            if not is_dead_cat and price > ema20 and rs20 > 0:
+                if is_breakout:
+                    pattern = "🔥 放量突破 (真突破)"
+                elif is_shakeout:
+                    pattern = "🧹 借纳指洗盘 (抗跌)"
+                elif is_deep_v:
+                    pattern = "🗡 深V探底 (长下影线)"
+                elif vol_ratio < 0.8 and price <= ema20 * 1.02:
+                    pattern = "🪶 缩量回踩 (极佳买点)"
+                else:
+                    pattern = "📈 趋势延续"
+                
+                stop = round(price - (1.5 * atr), 2)
+                target = round(price + (1.5 * atr * 2), 2)
                 shares = int(250 / (price - stop)) if price > stop else 0
                 
                 if shares > 0:
-                    # 形态诊断
-                    if vol_ratio > 1.5:
-                        action = "🔥 <b>放量突破</b> (可顺势买)"
-                    elif price < ema20 * 1.02:
-                        action = "🎯 <b>精准回踩</b> (盈亏比极佳)"
-                    else:
-                        action = "📈 <b>强势延续</b> (找分时低点)"
-                    
                     valid_cards.append({
-                        "symbol": sym, "price": price, "stop": stop, 
-                        "target": target, "shares": shares, 
-                        "rs": round(rs_score * 100, 2), "action": action,
-                        "vol": round(vol_ratio, 2)
+                        "sym": sym, "sector": sector, "dir": "🟢 做多", "pattern": pattern,
+                        "price": round(price,2), "stop": stop, "target": target, "shares": shares, "rs": round(rs20*100,1)
                     })
-        except:
+            
+            # 做空逻辑 (死猫跳是做空的好机会，破位放量也是)
+            elif (is_dead_cat and rs20 < 0) or (price < ema20 and is_breakout and stock_ret_today < 0):
+                pattern = "💀 死猫跳诱多 (做空)" if is_dead_cat else "🩸 破位放量下杀"
+                stop = round(price + (1.5 * atr), 2)
+                target = round(price - (1.5 * atr * 2), 2)
+                shares = int(250 / (stop - price)) if stop > price else 0
+                
+                if shares > 0:
+                    valid_cards.append({
+                        "sym": sym, "sector": sector, "dir": "🔴 做空", "pattern": pattern,
+                        "price": round(price,2), "stop": stop, "target": target, "shares": shares, "rs": round(rs20*100,1)
+                    })
+                    
+        except Exception as e:
             pass
 
-    # 按强弱排序，只取前3名
-    valid_cards.sort(key=lambda x: x["rs"], reverse=True)
-    top_cards = valid_cards[:3]
-
-    # 4. 组装终极战报
-    msg = f"<b>📊 东京交易台 - 盘前狙击 (完全体)</b>\n时间: {now_jst}\n-------------------\n"
-    msg += f"<b>宏观环境：</b>\n"
-    msg += f"SPY: ${spy_price} (20日涨幅 {round(spy_ret20*100,2)}%)\n"
-    msg += f"NVDA: ${snap.get('NVDA')} | VIX: {snap.get('VIX')} | 油: ${snap.get('BRENT')}\n\n"
-
-    if vetoes:
-        msg += f"<b>🚨 宏观否决触发：</b>\n"
-        for v in vetoes: msg += f"❌ {v}\n"
-        msg += "⚠️ <i>规则：今日禁止开新仓，只准减仓或空仓！</i>\n\n"
-    else:
-        msg += f"✅ <b>宏观状态健康，开启猎人模式</b>\n\n"
-
-    if top_cards:
-        msg += f"<b>🎯 发现猎物 (单笔风控 $250)：</b>\n"
-        for c in top_cards:
-            msg += f"👉 <b>{c['symbol']}</b> (强于大盘 <b>{c['rs']}%</b>, 量比 {c['vol']})\n"
-            msg += f"策略：{c['action']}\n"
-            msg += f"参考入场: ${c['price']} | 🛑 止损: ${c['stop']}\n"
-            msg += f"🎯 目标: ${c['target']} | 📦 建议买入: {c['shares']} 股\n"
+    # 组装战报
+    msg = f"<b>🦅 华尔街量价形态猎头 (洗盘/死猫跳识别)</b>\n时间: {now_jst}\n"
+    msg += f"纳指今日表现: <b>{round(qqq_ret_today*100,2)}%</b>\n-------------------\n"
+    
+    if valid_cards:
+        for c in valid_cards[:5]: # 胜率最高的前5个
+            msg += f"{c['dir']} | <b>{c['sym']}</b> ({c['sector']})\n"
+            msg += f"形态: <b>{c['pattern']}</b>\n"
+            msg += f"现价: ${c['price']} (强于大盘 {c['rs']}%)\n"
+            msg += f"🛑 止损: ${c['stop']} | 🎯 目标: ${c['target']}\n"
+            msg += f"📦 建议: {c['shares']} 股 (风控$250)\n"
             msg += f"-------------------\n"
     else:
-        msg += "今日没有股票同时满足“强于大盘”且“形态突破”。\n<b>空仓也是一种仓位，绝不强行交易！</b>\n"
+        msg += "今日未捕捉到明显的机构洗盘或放量突破形态。\n<b>空仓也是一种仓位，绝不强行交易！</b>\n"
 
-    msg += "\n<i>系统提供计算卡片，扣动扳机需由你人工确认。</i>"
+    msg += "\n⚠️ <i>提示：形态识别基于日线数据，请结合盘口人工确认！</i>"
     
     send_tg(msg)
     print("扫描完成。")
