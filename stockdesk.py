@@ -6,7 +6,7 @@ from datetime import datetime
 import zoneinfo
 
 # 🔒 专属密码
-BOT_TOKEN = "9238442861:AAFKdxsbDK-FYaqNRNcXCoFV02NVVkGiW98"
+BOT_TOKEN = "9238442861:AAFKdxsbDK-FYaqNRNcXCoFVO2NVVkGiW98"
 CHAT_ID = "6863511869"
 
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
