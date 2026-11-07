@@ -21,7 +21,9 @@ def send_tg(text):
 
 def scan_market():
     now_jst = datetime.now(JST).strftime("%Y-%m-%d %H:%M JST")
-    tickers = {"NVDA": "NVDA", "BRENT": "BZ=F", "VIX": "^VIX", "SPY": "SPY"}
+    # 加入了黄金(GLD)、铜矿(COPX)、稀土(REMX)、锂矿(LIT)
+    tickers = {"NVDA": "NVDA", "BRENT": "BZ=F", "VIX": "^VIX", "SPY": "SPY", 
+               "GLD": "GLD", "COPX": "COPX", "REMX": "REMX", "LIT": "LIT"}
     snap = {}
     for key, ticker in tickers.items():
         try:
@@ -39,7 +41,8 @@ def scan_market():
     if snap.get("VIX") and snap["VIX"] > 28:
         vetoes.append("VIX>28 (市场恐慌)")
 
-    candidates = ["AMD", "MU", "TSLA", "PLTR", "AVGO", "SMCI"]
+    # 扫描池加入了：矿业股票 (MP稀土、FCX铜、ALB锂) 和 科技股
+    candidates = ["AMD", "MU", "TSLA", "PLTR", "AVGO", "SMCI", "MP", "FCX", "ALB", "XOM"]
     valid_cards = []
     
     for sym in candidates:
@@ -67,7 +70,10 @@ def scan_market():
     msg += f"时间: {now_jst}\n"
     msg += f"-------------------\n"
     msg += f"<b>市场温度：</b>\n"
-    msg += f"NVDA: ${snap.get('NVDA')} | VIX: {snap.get('VIX')} | 油: ${snap.get('BRENT')}\n\n"
+    msg += f"NVDA: ${snap.get('NVDA')} | VIX: {snap.get('VIX')} | 油: ${snap.get('BRENT')}\n"
+    msg += f"<b>资源/矿场 ETF：</b>\n"
+    msg += f"黄金: ${snap.get('GLD')} | 铜矿: ${snap.get('COPX')}\n"
+    msg += f"稀土: ${snap.get('REMX')} | 锂矿: ${snap.get('LIT')}\n\n"
 
     if vetoes:
         msg += f"<b>🚨 宏观否决触发：</b>\n"
@@ -78,13 +84,11 @@ def scan_market():
         msg += f"✅ <b>宏观状态正常，寻找机会</b>\n\n"
 
     if valid_cards:
-        msg += f"<b>🎯 今日交易候选（单笔上限$250）：</b>\n"
-        for c in valid_cards[:2]:
+        msg += f"<b>🎯 今日交易候选（含矿场）：</b>\n"
+        for c in valid_cards[:3]:
             msg += f"👉 <b>{c['symbol']}</b> (评分{c['score']})\n"
-            msg += f"参考入场: ${c['price']}\n"
-            msg += f"🛑 止损: ${c['stop']}\n"
-            msg += f"🎯 目标1: ${c['target']}\n"
-            msg += f"📦 建议股数: {c['shares']} 股 (最大亏$250)\n"
+            msg += f"参考入场: ${c['price']} | 止损: ${c['stop']}\n"
+            msg += f"🎯 目标1: ${c['target']} | 股数: {c['shares']} 股\n"
             msg += f"-------------------\n"
     else:
         msg += "今日无符合形态的优质候选。\n<b>空仓也是一种仓位，按兵不动！</b>\n"
