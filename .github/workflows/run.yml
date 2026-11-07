@@ -1,11 +1,14 @@
 name: StockDesk Auto Scan
 on:
   schedule:
-    - cron: '0 12 * * 1-5' # 每天美东中午12点（日经收盘/美股盘前）
-  workflow_dispatch:      # 允许你随时手动点按钮测试
+    # 任务1：美东 09:00 (UTC 14:00)，盘前跑插针预测
+    - cron: '0 14 * * 1-5'
+    # 任务2：美东 12:00 (UTC 17:00)，盘中跑四大金刚扫描
+    - cron: '0 17 * * 1-5' 
+  workflow_dispatch:      
 
 jobs:
-  scan:
+  premarket_pin_scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,5 +17,17 @@ jobs:
           python-version: '3.10'
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Run Scan
+      - name: Run Pin Scanner
+        run: python pin_scanner.py
+
+  regular_scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run Main Scanner
         run: python stockdesk.py
